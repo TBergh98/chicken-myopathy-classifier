@@ -1,0 +1,13 @@
+name: vocalizzazioni-audio
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - numpy
+    - pandas
+    - librosa
+    - soundfile
+    - scipy
+    - tqdm
