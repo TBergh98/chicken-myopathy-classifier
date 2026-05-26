@@ -13,6 +13,7 @@ from scipy import stats
 from sklearn.metrics import roc_auc_score
 import warnings
 import json
+from feature_selection_utils import write_feature_manifest
 
 warnings.filterwarnings('ignore')
 
@@ -318,6 +319,20 @@ top_sig = results_df[results_df['Significant_U']].sort_values('AbsCohenD', ascen
 if len(top_sig) > 0:
     top_sig.to_csv(OUTPUT_DIR / 'significant_features.csv', index=False)
     print(f"  ✓ Saved significant_features.csv ({len(top_sig)} features)")
+
+    manifest_features = top_sig['Feature'].tolist()
+    write_feature_manifest(
+        OUTPUT_DIR / 'feature_manifest_significant.json',
+        name='phase2_significant_features',
+        source_phase='phase2_univariate',
+        selection_rule='U-test FDR<0.05 sorted by absolute Cohen\'s d',
+        features=manifest_features,
+        metadata={
+            'n_features_analyzed': int(len(results_df)),
+            'n_significant_u': int(len(top_sig)),
+        },
+    )
+    print(f"  ✓ Saved feature_manifest_significant.json ({len(manifest_features)} features)")
 
 # ============================================================================
 # GENERATE REPORT

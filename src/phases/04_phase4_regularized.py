@@ -9,14 +9,20 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
+import argparse
+import time
 from sklearn.model_selection import StratifiedKFold, RepeatedStratifiedKFold
 from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import GridSearchCV
 from sklearn.linear_model import LogisticRegression, Lasso, Ridge
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score, balanced_accuracy_score, matthews_corrcoef, precision_recall_curve, auc as auc_pr
 import warnings
 import json
+
+from feature_selection_utils import load_feature_manifest, write_feature_manifest, deduplicate_features
 
 warnings.filterwarnings('ignore')
 
@@ -29,11 +35,28 @@ DATA_DIR = BASE_DIR / "data" / "processed" / "audio_features_output"
 LABELS_PATH = BASE_DIR / "data" / "processed" / "ws_labels_binary.parquet"
 OUTPUT_DIR = BASE_DIR / "analysis" / "phase4_regularized"
 PHASE1_DIR = BASE_DIR / "analysis" / "phase1_eda"
+PHASE2_DIR = BASE_DIR / "analysis" / "phase2_univariate"
+PHASE3_DIR = BASE_DIR / "analysis" / "phase3_blocks"
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette("husl")
+
+parser = argparse.ArgumentParser(description='Phase 4 regularized modeling')
+parser.add_argument(
+    '--feature-mode',
+    choices=['all', 'reduced'],
+    default='reduced',
+    help='Feature set to use: all numeric features or the default reduced set.',
+)
+parser.add_argument(
+    '--feature-manifest',
+    type=str,
+    default=None,
+    help='Optional path to a custom feature manifest JSON file.',
+)
+args = parser.parse_args()
 
 # ============================================================================
 # LOAD DATA AND METADATA
@@ -71,11 +94,51 @@ if 'ws_grade_raw' in numeric_cols:
     numeric_cols.remove('ws_grade_raw')
 numeric_cols = [c for c in numeric_cols if 'chicken_id' not in c.lower()]
 
-X = df[numeric_cols].fillna(df[numeric_cols].mean())
+def _load_reduced_feature_set() -> tuple[list[str], str]:
+    phase2_manifest = PHASE2_DIR / 'feature_manifest_significant.json'
+    phase3_manifest = PHASE3_DIR / 'feature_manifest_best_block.json'
+
+    if not phase2_manifest.exists() or not phase3_manifest.exists():
+        missing = []
+        if not phase2_manifest.exists():
+            missing.append(str(phase2_manifest))
+        if not phase3_manifest.exists():
+            missing.append(str(phase3_manifest))
+        raise FileNotFoundError(
+            'Reduced feature mode requires phase 2 and phase 3 manifests. Missing: ' + ', '.join(missing)
+        )
+
+    phase2_features = load_feature_manifest(phase2_manifest)['features']
+    phase3_features = load_feature_manifest(phase3_manifest)['features']
+    combined = deduplicate_features(list(phase3_features) + list(phase2_features))
+    return combined, f"reduced: {phase3_manifest.name} + {phase2_manifest.name}"
+
+
+if args.feature_manifest:
+    manifest_path = Path(args.feature_manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = BASE_DIR / manifest_path
+    manifest = load_feature_manifest(manifest_path)
+    selected_features = [f for f in manifest['features'] if f in numeric_cols]
+    feature_source = f"custom manifest: {manifest_path}"
+elif args.feature_mode == 'reduced':
+    selected_features, feature_source = _load_reduced_feature_set()
+    selected_features = [f for f in selected_features if f in numeric_cols]
+else:
+    selected_features = list(numeric_cols)
+    feature_source = 'all numeric features'
+
+selected_features = deduplicate_features([f for f in selected_features if f in numeric_cols])
+if len(selected_features) == 0:
+    raise ValueError('No usable features selected for phase 4 modeling.')
+
+X = df[selected_features].fillna(df[selected_features].mean())
 y = df[label_col]
 y_encoded = (y != y.unique()[0]).astype(int)
 
-print(f"✓ {len(numeric_cols)} features, {len(X)} samples, {y_encoded.sum()} positive cases")
+print(f"✓ Feature mode: {args.feature_mode}")
+print(f"✓ Feature source: {feature_source}")
+print(f"✓ {len(selected_features)} features, {len(X)} samples, {y_encoded.sum()} positive cases")
 
 # If label is not binary, skip modeling early
 if y.nunique() != 2:
@@ -94,38 +157,69 @@ print("\n[2] Defining models...")
 
 models_config = {
     'ElasticNet': {
-        'model': lambda: LogisticRegression(
-            max_iter=1000, random_state=42, class_weight='balanced',
-            solver='saga', penalty='elasticnet', l1_ratio=0.5
-        ),
+        'model': lambda: Pipeline([
+            ('scaler', StandardScaler()),
+            ('clf', LogisticRegression(
+                max_iter=2000, random_state=42, class_weight='balanced',
+                solver='saga', penalty='elasticnet'
+            )),
+        ]),
+        'param_grid': {
+            'clf__C': [0.01, 0.1, 1.0, 3.0, 10.0],
+            'clf__l1_ratio': [0.1, 0.3, 0.5, 0.7, 0.9],
+        },
         'type': 'linear',
     },
     'LASSO': {
-        'model': lambda: LogisticRegression(
-            max_iter=1000, random_state=42, class_weight='balanced',
-            solver='saga', penalty='l1'
-        ),
+        'model': lambda: Pipeline([
+            ('scaler', StandardScaler()),
+            ('clf', LogisticRegression(
+                max_iter=2000, random_state=42, class_weight='balanced',
+                solver='saga', penalty='l1'
+            )),
+        ]),
+        'param_grid': {
+            'clf__C': [0.01, 0.1, 1.0, 3.0, 10.0],
+        },
         'type': 'linear',
     },
     'Ridge': {
-        'model': lambda: LogisticRegression(
-            max_iter=1000, random_state=42, class_weight='balanced',
-            solver='lbfgs', penalty='l2'
-        ),
+        'model': lambda: Pipeline([
+            ('scaler', StandardScaler()),
+            ('clf', LogisticRegression(
+                max_iter=2000, random_state=42, class_weight='balanced',
+                solver='lbfgs', penalty='l2'
+            )),
+        ]),
+        'param_grid': {
+            'clf__C': [0.01, 0.1, 1.0, 3.0, 10.0],
+        },
         'type': 'linear',
     },
     'LinearSVM': {
-        'model': lambda: SVC(
-            kernel='linear', C=1.0, random_state=42, class_weight='balanced',
-            probability=True
-        ),
+        'model': lambda: Pipeline([
+            ('scaler', StandardScaler()),
+            ('clf', SVC(
+                kernel='linear', random_state=42, class_weight='balanced',
+                probability=True
+            )),
+        ]),
+        'param_grid': {
+            'clf__C': [0.01, 0.1, 1.0, 3.0, 10.0],
+        },
         'type': 'linear',
     },
     'RandomForest': {
         'model': lambda: RandomForestClassifier(
-            n_estimators=100, max_depth=10, random_state=42,
+            n_estimators=200, max_depth=10, random_state=42,
             class_weight='balanced', n_jobs=-1
         ),
+        'param_grid': {
+            'n_estimators': [200, 400, 800],
+            'max_depth': [4, 6, 10, None],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4],
+        },
         'type': 'tree',
     },
 }
@@ -139,6 +233,7 @@ print(f"✓ {len(models_config)} models configured")
 print("\n[3] Running nested CV with stability selection...")
 
 cv_outer = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=42)
+cv_inner = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 n_folds = 5 * 3
 
 model_results = {}
@@ -150,6 +245,7 @@ for model_name, model_config in models_config.items():
     fold_metrics = []
     selected_features_by_fold = []
     importances_by_fold = []
+    best_params_by_fold = []
     
     for fold_idx, (train_idx, test_idx) in enumerate(cv_outer.split(X, y_encoded)):
         if (fold_idx + 1) % 5 == 0:
@@ -157,29 +253,30 @@ for model_name, model_config in models_config.items():
         
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y_encoded.iloc[train_idx], y_encoded.iloc[test_idx]
-        
-        # Standardize (except for tree models)
-        if model_config['type'] == 'linear':
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train)
-            X_test_scaled = scaler.transform(X_test)
-        else:
-            X_train_scaled = X_train.values
-            X_test_scaled = X_test.values
-        
-        # Train model
-        model = model_config['model']()
+
+        estimator = model_config['model']()
+        param_grid = model_config['param_grid']
         try:
-            model.fit(X_train_scaled, y_train)
+            search = GridSearchCV(
+                estimator=estimator,
+                param_grid=param_grid,
+                scoring='roc_auc',
+                cv=cv_inner,
+                n_jobs=-1,
+                refit=True,
+            )
+            search.fit(X_train, y_train)
+            model = search.best_estimator_
+            best_params_by_fold.append(search.best_params_)
         except Exception as e:
             print(f"      ! Model fitting failed: {e}")
             continue
         
         # Predictions
         try:
-            y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+            y_pred_proba = model.predict_proba(X_test)[:, 1]
         except:
-            y_pred_proba = model.decision_function(X_test_scaled)
+            y_pred_proba = model.decision_function(X_test)
             if y_pred_proba.min() < 0:
                 y_pred_proba = (y_pred_proba - y_pred_proba.min()) / (y_pred_proba.max() - y_pred_proba.min())
         
@@ -200,20 +297,23 @@ for model_name, model_config in models_config.items():
             'pr_auc': pr_auc,
             'balanced_acc': bal_acc,
             'mcc': mcc,
+            'best_params': json.dumps(search.best_params_, sort_keys=True),
+            'best_cv_auc': search.best_score_,
         })
         
         # Feature importance/selection
-        if hasattr(model, 'coef_'):
-            # Linear models: use absolute coefficients
-            coef = np.abs(model.coef_.flatten())
-            selected = numeric_cols  # All features used
-            importances_by_fold.append(dict(zip(numeric_cols, coef)))
+        if model_name != 'RandomForest':
+            # Linear models: use absolute coefficients from the final classifier
+            coef_model = model.named_steps['clf'] if hasattr(model, 'named_steps') else model
+            if hasattr(coef_model, 'coef_'):
+                coef = np.abs(coef_model.coef_.flatten())
+                importances_by_fold.append(dict(zip(selected_features, coef)))
         elif hasattr(model, 'feature_importances_'):
             # Tree models: use feature importance
             importance = model.feature_importances_
-            importances_by_fold.append(dict(zip(numeric_cols, importance)))
+            importances_by_fold.append(dict(zip(selected_features, importance)))
         
-        selected_features_by_fold.append(set(numeric_cols))
+        selected_features_by_fold.append(set(selected_features))
     
     # Aggregate results
     if fold_metrics:
@@ -227,6 +327,7 @@ for model_name, model_config in models_config.items():
             'std_bal_acc': fold_metrics_df['balanced_acc'].std(),
             'mean_mcc': fold_metrics_df['mcc'].mean(),
             'std_mcc': fold_metrics_df['mcc'].std(),
+            'best_params': best_params_by_fold,
             'fold_metrics': fold_metrics,
         }
         
@@ -242,6 +343,7 @@ for model_name, model_config in models_config.items():
             feature_importance_by_model[model_name] = feature_importance_dict
         
         print(f"    ✓ ROC-AUC: {model_results[model_name]['mean_auc']:.3f}±{model_results[model_name]['std_auc']:.3f}")
+        print(f"    ↳ Tuned params tried on {len(best_params_by_fold)} folds")
 
 # If label is not binary, exit gracefully (nothing to model)
 if y.nunique() != 2:
@@ -412,6 +514,21 @@ top_features_df = pd.DataFrame(top_features, columns=['Feature', 'Mean_Importanc
 top_features_df.to_csv(OUTPUT_DIR / 'top_features_by_importance.csv', index=False)
 print("  ✓ Saved top_features_by_importance.csv")
 
+write_feature_manifest(
+    OUTPUT_DIR / 'feature_manifest_used.json',
+    name='phase4_used_feature_set',
+    source_phase='phase4_regularized',
+    selection_rule=feature_source,
+    features=selected_features,
+    metadata={
+        'feature_mode': args.feature_mode,
+        'feature_source': feature_source,
+        'n_features': len(selected_features),
+        'model_count': len(models_config),
+    },
+)
+print(f"  ✓ Saved feature_manifest_used.json ({len(selected_features)} features)")
+
 # ============================================================================
 # GENERATE REPORT
 # ============================================================================
@@ -424,7 +541,9 @@ report = f"""
 ## Study Design
 - **Cross-validation**: 3×5-fold repeated stratified CV ({n_folds} folds)
 - **Models tested**: {len(model_names)}
-- **Features**: {len(numeric_cols)}
+- **Feature mode**: {args.feature_mode}
+- **Feature source**: {feature_source}
+- **Features**: {len(selected_features)}
 - **Strategy**: Emphasis on Elastic Net (primary), with comparison to LASSO, Ridge, SVM, RF
 
 ## Model Performance Summary

@@ -15,6 +15,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve, auc, precision_recall_curve, balanced_accuracy_score, matthews_corrcoef
 import warnings
 import json
+from feature_selection_utils import write_feature_manifest
 
 warnings.filterwarnings('ignore')
 
@@ -370,6 +371,23 @@ report += f"\n## Key Findings\n\n### Best Performing Feature Group\n"
 
 best_group = summary_df.loc[summary_df['Mean_AUC'].idxmax()]
 report += f"- **{best_group['Feature_Group']}** with ROC-AUC = {best_group['Mean_AUC']:.4f}±{best_group['Std_AUC']:.4f}\n"
+
+best_group_name = best_group['Feature_Group']
+best_group_features = analysis_groups[best_group_name]
+write_feature_manifest(
+    OUTPUT_DIR / 'feature_manifest_best_block.json',
+    name='phase3_best_feature_block',
+    source_phase='phase3_blocks',
+    selection_rule='best mean ROC-AUC across feature groups',
+    features=best_group_features,
+    metadata={
+        'best_group': str(best_group_name),
+        'mean_auc': float(best_group['Mean_AUC']),
+        'std_auc': float(best_group['Std_AUC']),
+        'n_groups': int(len(analysis_groups)),
+    },
+)
+print(f"  ✓ Saved feature_manifest_best_block.json ({len(best_group_features)} features)")
 
 report += f"\n## Visualizations\n- `01_roc_auc_by_group.png` - ROC-AUC comparison\n- `02_balanced_accuracy_by_group.png` - Balanced accuracy comparison\n- `03_mcc_by_group.png` - MCC comparison  \n- `04_metrics_heatmap.png` - Multi-metric heatmap\n\n## Next Steps\n- Phase 4: Regularized modeling with all approaches + stability selection\n- Phase 5: Feature importance interpretation\n"
 
