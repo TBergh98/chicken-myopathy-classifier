@@ -35,8 +35,9 @@ htmlcov/
 # Logs and local runtime files
 *.log
 
-# Keep project data and reference docs tracked
-!data/
-!data/**
-!docs/reference/
-!docs/reference/**
+# Public repo hygiene: keep generated analysis and raw inputs out of sync
+/analysis/
+/data/
+
+# Keep reference docs out of public sync
+/docs/reference/
