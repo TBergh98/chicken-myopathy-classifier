@@ -27,25 +27,6 @@ A **comprehensive 6-phase feature selection and dimensionality reduction pipelin
 
 ## Phase Descriptions
 
-### Phase 1: Exploratory Data Analysis (✅ Complete)
-
-**File**: `01_phase1_eda.py`
-
-**Objectives**:
-- Load and inspect audio feature data
-- Identify feature blocks and structure
-- Assess data quality (missing values, outliers, duplicates)
-- Analyze class balance
-- Generate correlation matrix and distribution plots
-
-**Outputs** (`analysis/phase1_eda/`):
-- `metadata.json` — Feature blocks and high-correlation pairs (used by all phases)
-- `univariate_results.csv` — Effect sizes and p-values
-- 5 visualizations (class distribution, correlation heatmap, feature blocks, variance ranking)
-- `REPORT.md` — Human-readable summary
-
----
-
 This document provides a complete, consolidated description of the six-phase feature-selection and dimensionality-reduction pipeline implemented for the chicken myopathy vocalization dataset. The full pipeline is implemented across the `analysis/phase*` scripts and summarized below.
 
 ### Phase 1: Exploratory Data Analysis (✅ Complete)
